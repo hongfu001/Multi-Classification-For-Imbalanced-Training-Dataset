@@ -1,0 +1,527 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+import seaborn as sns
+from sklearn.ensemble import RandomForestClassifier
+from imblearn.ensemble import BalancedRandomForestClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.preprocessing import StandardScaler
+import os
+from itertools import combinations
+import warnings
+
+warnings.filterwarnings('ignore')
+
+# Set Arial font for all plots
+try:
+    plt.rcParams['font.family'] = 'Arial'
+except:
+    plt.rcParams['font.family'] = 'DejaVu Sans'  # Fallback font
+    print("Arial font not available, using DejaVu Sans as fallback")
+
+plt.rcParams['font.size'] = 10
+
+# Create output directory
+output_dir = 'NYC_HOLC_Analysis_Results'
+if not os.path.exists(output_dir):
+    os.makedirs(output_dir)
+
+# Define color palette - only red, light red, orange, yellow, purple, pink, blue (NO GREEN)
+colors = ['#8B008B', '#FF69B4', '#FF4500', '#FFD700', '#4B0082', '#FFA500', '#1E90FF', '#FF6347']
+# Enhanced contrast colors for HOLC values 0 and 1 - NO GREEN COLORS
+holc_colors = {
+    0: '#8B008B',  # Dark Purple for HOLC Value 0
+    1: '#FF1493',  # Deep Pink for HOLC Value 1 (strong contrast)
+    2: '#1E90FF',  # Dodger Blue for HOLC Value 2
+    3: '#87CEEB'  # Sky Blue for HOLC Value 3
+}
+
+# Load data
+print("Loading NYC data...")
+try:
+    data = pd.read_csv('NYC0619.csv')
+    print(f"Successfully loaded dataset with shape: {data.shape}")
+except FileNotFoundError:
+    print("Error: NYC0619.csv file not found. Please ensure the file is in the current directory.")
+    exit(1)
+
+# Define features and target
+feature_columns = ['LConn', 'LLen', 'LFrac', 'LAC', 'LSin', 'LBear', 'MHDn', 'NQPDHn',
+                   'BtHn', 'TPBtHn', 'Lnkn', 'Lenn', 'AngDn', 'MGLHn', 'MCFn', 'MI',
+                   'MWPR', 'MPMR', 'MNOR', 'MBCR', 'MNAR', 'MCAR', 'MFAR']
+
+X = data[feature_columns]
+y = data['HOLC Value'].astype(str)
+
+print(f"HOLC Value distribution:\n{y.value_counts().sort_index()}")
+
+# Split data
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42, stratify=y)
+
+# Train Balanced Random Forest
+print("Training Balanced Random Forest...")
+brf = BalancedRandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1)
+brf.fit(X_train, y_train)
+
+# Get feature importance
+feature_importance = pd.DataFrame({
+    'feature': feature_columns,
+    'importance': brf.feature_importances_
+}).sort_values('importance', ascending=False)
+
+print("Feature Importance:")
+print(feature_importance.head(10))
+
+# Save feature importance
+feature_importance.to_csv(os.path.join(output_dir, 'feature_importance.csv'), index=False)
+
+# Get top 6 features (as specified)
+top_6_features = ['LSin', 'LBear', 'MI', 'AngDn', 'NQPDHn', 'MNAR']
+
+# Generate value ranges for top 6 features
+print("\nValue ranges for top 6 features:")
+feature_ranges = {}
+for feature in top_6_features:
+    min_val = data[feature].min()
+    max_val = data[feature].max()
+    feature_ranges[feature] = (min_val, max_val)
+    print(f"{feature}: [{min_val:.4f}, {max_val:.4f}]")
+
+# Save feature ranges
+ranges_df = pd.DataFrame([(k, v[0], v[1]) for k, v in feature_ranges.items()],
+                         columns=['Feature', 'Min_Value', 'Max_Value'])
+ranges_df.to_csv(os.path.join(output_dir, 'feature_ranges.csv'), index=False)
+
+
+# Function to create 3D scatter plots
+def create_3d_scatter(data, x_col, y_col, z_col, title, filename):
+    fig = plt.figure(figsize=(14, 11))  # Increased figure size
+    ax = fig.add_subplot(111, projection='3d')
+
+    for holc_val in sorted(data['HOLC Value'].unique()):
+        subset = data[data['HOLC Value'] == holc_val]
+        ax.scatter(subset[x_col], subset[y_col], subset[z_col],
+                   c=holc_colors[holc_val], label=f'HOLC Value {holc_val}',
+                   alpha=0.7, s=30)
+
+    ax.set_xlabel(x_col, labelpad=10)  # Added label padding
+    ax.set_ylabel(y_col, labelpad=10)
+    ax.set_zlabel(z_col, labelpad=10)
+    ax.set_title(title, pad=20)  # Added title padding
+    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')  # Moved legend outside
+
+    # Adjust layout to prevent overlap
+    plt.subplots_adjust(left=0.1, right=0.85, top=0.9, bottom=0.1)
+    plt.savefig(os.path.join(output_dir, filename), dpi=300, bbox_inches='tight',
+                facecolor='white', edgecolor='none')
+    plt.close()
+
+
+# Function to create 3D surface plots
+def create_3d_surface(X_feature, Y_feature, Z_feature, title, filename):
+    # Create meshgrid
+    x_range = np.linspace(data[X_feature].min(), data[X_feature].max(), 30)
+    y_range = np.linspace(data[Y_feature].min(), data[Y_feature].max(), 30)
+    X_mesh, Y_mesh = np.meshgrid(x_range, y_range)
+
+    # Create prediction grid
+    grid_points = []
+    for i in range(len(x_range)):
+        for j in range(len(y_range)):
+            # Use median values for other features
+            point = data[feature_columns].median().values.copy()
+            point[feature_columns.index(X_feature)] = X_mesh[j, i]
+            point[feature_columns.index(Y_feature)] = Y_mesh[j, i]
+            grid_points.append(point)
+
+    grid_df = pd.DataFrame(grid_points, columns=feature_columns)
+    predictions = brf.predict_proba(grid_df)
+
+    # Get probability for class '0' and '1'
+    prob_0 = np.zeros(len(predictions))
+    prob_1 = np.zeros(len(predictions))
+
+    if '0' in brf.classes_:
+        prob_0 = predictions[:, list(brf.classes_).index('0')].reshape(X_mesh.shape)
+    if '1' in brf.classes_:
+        prob_1 = predictions[:, list(brf.classes_).index('1')].reshape(X_mesh.shape)
+
+    # Create surface plot with increased spacing
+    fig = plt.figure(figsize=(18, 7))  # Increased width
+
+    # Probability for HOLC Value 0
+    ax1 = fig.add_subplot(131, projection='3d')
+    surf1 = ax1.plot_surface(X_mesh, Y_mesh, prob_0, cmap='Purples', alpha=0.8)
+    ax1.set_xlabel(X_feature, labelpad=8)
+    ax1.set_ylabel(Y_feature, labelpad=8)
+    ax1.set_zlabel('Probability', labelpad=8)
+    ax1.set_title(f'Probability of HOLC Value 0\n({X_feature} vs {Y_feature})', pad=15)
+
+    # Probability for HOLC Value 1
+    ax2 = fig.add_subplot(132, projection='3d')
+    surf2 = ax2.plot_surface(X_mesh, Y_mesh, prob_1, cmap='Reds', alpha=0.8)
+    ax2.set_xlabel(X_feature, labelpad=8)
+    ax2.set_ylabel(Y_feature, labelpad=8)
+    ax2.set_zlabel('Probability', labelpad=8)
+    ax2.set_title(f'Probability of HOLC Value 1\n({X_feature} vs {Y_feature})', pad=15)
+
+    # Combined contour showing regions with high contrast colors
+    ax3 = fig.add_subplot(133, projection='3d')
+    # Show regions where prob_0 > prob_1 vs prob_1 > prob_0
+    Z_combined = np.where(prob_0 > prob_1, prob_0, -prob_1)
+    surf3 = ax3.plot_surface(X_mesh, Y_mesh, Z_combined, cmap='coolwarm', alpha=0.8)
+    ax3.set_xlabel(X_feature, labelpad=8)
+    ax3.set_ylabel(Y_feature, labelpad=8)
+    ax3.set_zlabel('Probability Difference', labelpad=8)
+    ax3.set_title(f'HOLC Value 0 vs 1 Regions\n({X_feature} vs {Y_feature})', pad=15)
+
+    # Increase spacing between subplots
+    plt.subplots_adjust(left=0.05, right=0.95, top=0.85, bottom=0.15, wspace=0.3)
+    plt.savefig(os.path.join(output_dir, filename), dpi=300, bbox_inches='tight',
+                facecolor='white', edgecolor='none')
+    plt.close()
+
+
+# Enhanced function to create 3D contour probability plots with strong color contrast
+def create_3d_contour_probability(feature1, feature2, feature3, title, filename):
+    # Create 3D grid for the three features
+    n_points = 20
+    f1_range = np.linspace(data[feature1].min(), data[feature1].max(), n_points)
+    f2_range = np.linspace(data[feature2].min(), data[feature2].max(), n_points)
+    f3_range = np.linspace(data[feature3].min(), data[feature3].max(), n_points)
+
+    # Create prediction points
+    grid_points = []
+    coords = []
+
+    for f1 in f1_range:
+        for f2 in f2_range:
+            for f3 in f3_range:
+                point = data[feature_columns].median().values.copy()
+                point[feature_columns.index(feature1)] = f1
+                point[feature_columns.index(feature2)] = f2
+                point[feature_columns.index(feature3)] = f3
+                grid_points.append(point)
+                coords.append([f1, f2, f3])
+
+    grid_df = pd.DataFrame(grid_points, columns=feature_columns)
+    predictions = brf.predict_proba(grid_df)
+    coords = np.array(coords)
+
+    # Get probabilities for classes 0 and 1
+    prob_0 = np.zeros(len(predictions))
+    prob_1 = np.zeros(len(predictions))
+
+    if '0' in brf.classes_:
+        prob_0 = predictions[:, list(brf.classes_).index('0')]
+    if '1' in brf.classes_:
+        prob_1 = predictions[:, list(brf.classes_).index('1')]
+
+    # Create 3D scatter plot showing probability regions with increased spacing
+    fig = plt.figure(figsize=(24, 8))  # Much wider figure
+
+    # Plot for HOLC Value 0 - Deep Purple regions
+    ax1 = fig.add_subplot(141, projection='3d')
+    scatter1 = ax1.scatter(coords[:, 0], coords[:, 1], coords[:, 2],
+                           c=prob_0, cmap='Purples', alpha=0.7, s=25,
+                           vmin=0, vmax=1)
+    ax1.set_xlabel(feature1, labelpad=10)
+    ax1.set_ylabel(feature2, labelpad=10)
+    ax1.set_zlabel(feature3, labelpad=10)
+    ax1.set_title(f'3D Probability Contour\nHOLC Value 0\n(Deep Purple Scale)', pad=20)
+    cbar1 = plt.colorbar(scatter1, ax=ax1, shrink=0.6, pad=0.1)
+    cbar1.ax.tick_params(labelsize=7)
+
+    # Plot for HOLC Value 1 - Pink/Red regions
+    ax2 = fig.add_subplot(142, projection='3d')
+    scatter2 = ax2.scatter(coords[:, 0], coords[:, 1], coords[:, 2],
+                           c=prob_1, cmap='Reds', alpha=0.7, s=25,
+                           vmin=0, vmax=1)
+    ax2.set_xlabel(feature1, labelpad=10)
+    ax2.set_ylabel(feature2, labelpad=10)
+    ax2.set_zlabel(feature3, labelpad=10)
+    ax2.set_title(f'3D Probability Contour\nHOLC Value 1\n(Pink/Red Scale)', pad=20)
+    cbar2 = plt.colorbar(scatter2, ax=ax2, shrink=0.6, pad=0.1)
+    cbar2.ax.tick_params(labelsize=7)
+
+    # Combined view showing dominant class with strong contrast
+    ax3 = fig.add_subplot(143, projection='3d')
+    dominant_class = np.where(prob_0 > prob_1, 0, 1)
+
+    # Use high contrast colors: Deep Purple vs Bright Pink
+    colors_dominant = [holc_colors[0] if x == 0 else holc_colors[1] for x in dominant_class]
+
+    scatter3 = ax3.scatter(coords[:, 0], coords[:, 1], coords[:, 2],
+                           c=colors_dominant, alpha=0.8, s=25)
+    ax3.set_xlabel(feature1, labelpad=10)
+    ax3.set_ylabel(feature2, labelpad=10)
+    ax3.set_zlabel(feature3, labelpad=10)
+    ax3.set_title(f'3D Regions\nHigh Contrast\nPurple=HOLC 0\nPink=HOLC 1', pad=20)
+
+    # Additional view: Probability difference surface
+    ax4 = fig.add_subplot(144, projection='3d')
+    prob_diff = prob_0 - prob_1  # Positive = favor HOLC 0, Negative = favor HOLC 1
+    scatter4 = ax4.scatter(coords[:, 0], coords[:, 1], coords[:, 2],
+                           c=prob_diff, cmap='RdBu', alpha=0.7, s=25,
+                           vmin=-1, vmax=1)
+    ax4.set_xlabel(feature1, labelpad=10)
+    ax4.set_ylabel(feature2, labelpad=10)
+    ax4.set_zlabel(feature3, labelpad=10)
+    ax4.set_title(f'Probability Difference\nBlue=Favor HOLC 0\nRed=Favor HOLC 1', pad=20)
+    cbar4 = plt.colorbar(scatter4, ax=ax4, shrink=0.6, pad=0.1)
+    cbar4.ax.tick_params(labelsize=7)
+
+    # Increase spacing between subplots significantly
+    plt.subplots_adjust(left=0.04, right=0.96, top=0.85, bottom=0.15, wspace=0.4)
+    plt.savefig(os.path.join(output_dir, filename), dpi=300, bbox_inches='tight',
+                facecolor='white', edgecolor='none')
+    plt.close()
+
+
+# Generate visualizations
+print("\nGenerating 3D visualizations...")
+
+# 1. 3D Scatter plots for top 6 features (combinations of 3)
+feature_combinations = list(combinations(top_6_features, 3))
+for i, (f1, f2, f3) in enumerate(feature_combinations[:6]):
+    create_3d_scatter(data, f1, f2, f3,
+                      f'3D Scatter: {f1} vs {f2} vs {f3}',
+                      f'3d_scatter_{i + 1}_{f1}_{f2}_{f3}.png')
+
+# 2. 3D Surface plots for probability predictions
+surface_combinations = [
+    ('LSin', 'LBear'), ('MI', 'AngDn'), ('NQPDHn', 'MNAR'),
+    ('LSin', 'MI'), ('LBear', 'AngDn'), ('NQPDHn', 'LSin')
+]
+
+for i, (f1, f2) in enumerate(surface_combinations):
+    create_3d_surface(f1, f2, f'Feature{i + 7}',
+                      f'3D Surface Probability: {f1} vs {f2}',
+                      f'3d_surface_{i + 7}_{f1}_{f2}.png')
+
+# 3. Enhanced 3D Contour probability plots with strong color contrast
+contour_combinations = [
+    ('LSin', 'LBear', 'MI'),
+    ('AngDn', 'NQPDHn', 'MNAR'),
+    ('LSin', 'MI', 'AngDn'),
+    ('LBear', 'NQPDHn', 'LSin'),
+    ('MI', 'MNAR', 'LBear'),
+    ('AngDn', 'LSin', 'NQPDHn')
+]
+
+for i, (f1, f2, f3) in enumerate(contour_combinations):
+    create_3d_contour_probability(f1, f2, f3,
+                                  f'3D Contour Probability: {f1}, {f2}, {f3}',
+                                  f'3d_contour_prob_{i + 13}_{f1}_{f2}_{f3}.png')
+
+
+# Generate model performance visualization
+def create_model_performance_viz():
+    # Predictions
+    y_pred = brf.predict(X_test)
+
+    # Confusion Matrix 3D
+    cm = confusion_matrix(y_test, y_pred)
+    classes = sorted(y_test.unique())
+
+    fig = plt.figure(figsize=(18, 8))  # Increased figure size
+
+    # 3D Confusion Matrix
+    ax1 = fig.add_subplot(131, projection='3d')
+    xpos, ypos = np.meshgrid(range(len(classes)), range(len(classes)))
+    xpos = xpos.flatten()
+    ypos = ypos.flatten()
+    zpos = np.zeros_like(xpos)
+
+    dx = dy = 0.8
+    dz = cm.flatten()
+
+    colors_cm = plt.cm.Blues(dz / dz.max() if dz.max() > 0 else 1)
+    ax1.bar3d(xpos, ypos, zpos, dx, dy, dz, color=colors_cm, alpha=0.8)
+    ax1.set_xlabel('Predicted', labelpad=10)
+    ax1.set_ylabel('Actual', labelpad=10)
+    ax1.set_zlabel('Count', labelpad=10)
+    ax1.set_title('3D Confusion Matrix', pad=20)
+    ax1.set_xticks(range(len(classes)))
+    ax1.set_xticklabels(classes, fontsize=8)
+    ax1.set_yticks(range(len(classes)))
+    ax1.set_yticklabels(classes, fontsize=8)
+
+    # Feature Importance 3D
+    ax2 = fig.add_subplot(132, projection='3d')
+    top_features = feature_importance.head(10)
+    x_pos = range(len(top_features))
+    y_pos = [0] * len(top_features)
+    z_pos = [0] * len(top_features)
+
+    dx = [0.6] * len(top_features)
+    dy = [0.6] * len(top_features)
+    dz = top_features['importance'].values
+
+    colors_fi = plt.cm.Oranges(dz / dz.max() if dz.max() > 0 else 1)
+    ax2.bar3d(x_pos, y_pos, z_pos, dx, dy, dz, color=colors_fi, alpha=0.8)
+    ax2.set_xlabel('Features', labelpad=10)
+    ax2.set_ylabel('', labelpad=10)
+    ax2.set_zlabel('Importance', labelpad=10)
+    ax2.set_title('3D Feature Importance', pad=20)
+    ax2.set_xticks(x_pos)
+    ax2.set_xticklabels(top_features['feature'], rotation=45, ha='right', fontsize=7)
+
+    # HOLC Value Distribution 3D
+    ax3 = fig.add_subplot(133, projection='3d')
+    holc_counts = data['HOLC Value'].value_counts().sort_index()
+    holc_values = list(holc_counts.index)
+    counts = list(holc_counts.values)
+
+    x_pos = range(len(holc_values))
+    y_pos = [0] * len(holc_values)
+    z_pos = [0] * len(holc_values)
+
+    dx = [0.6] * len(holc_values)
+    dy = [0.6] * len(holc_values)
+    dz = counts
+
+    # Use our defined HOLC colors
+    bar_colors = [holc_colors[val] for val in holc_values]
+    ax3.bar3d(x_pos, y_pos, z_pos, dx, dy, dz, color=bar_colors, alpha=0.8)
+    ax3.set_xlabel('HOLC Value', labelpad=10)
+    ax3.set_ylabel('', labelpad=10)
+    ax3.set_zlabel('Count', labelpad=10)
+    ax3.set_title('3D HOLC Value Distribution', pad=20)
+    ax3.set_xticks(x_pos)
+    ax3.set_xticklabels(holc_values, fontsize=8)
+
+    # Increase spacing between subplots
+    plt.subplots_adjust(left=0.06, right=0.94, top=0.85, bottom=0.2, wspace=0.35)
+    plt.savefig(os.path.join(output_dir, '3d_model_performance.png'), dpi=300, bbox_inches='tight',
+                facecolor='white', edgecolor='none')
+    plt.close()
+
+
+create_model_performance_viz()
+
+
+# Create comprehensive dataset summary
+def create_dataset_summary():
+    summary_stats = data[feature_columns + ['HOLC Value']].describe()
+    summary_stats.to_csv(os.path.join(output_dir, 'dataset_summary_statistics.csv'))
+
+    # Correlation matrix
+    correlation_matrix = data[feature_columns].corr()
+    correlation_matrix.to_csv(os.path.join(output_dir, 'feature_correlation_matrix.csv'))
+
+    # HOLC Value distribution
+    holc_distribution = data['HOLC Value'].value_counts().sort_index()
+    holc_distribution.to_csv(os.path.join(output_dir, 'holc_value_distribution.csv'))
+
+    # Predictions and probabilities for test set
+    test_predictions = brf.predict(X_test)
+    test_probabilities = brf.predict_proba(X_test)
+
+    results_df = X_test.copy()
+    results_df['Actual_HOLC_Value'] = y_test
+    results_df['Predicted_HOLC_Value'] = test_predictions
+
+    # Add probability columns
+    for i, class_label in enumerate(brf.classes_):
+        results_df[f'Probability_HOLC_{class_label}'] = test_probabilities[:, i]
+
+    results_df.to_csv(os.path.join(output_dir, 'test_predictions_with_probabilities.csv'), index=False)
+
+
+create_dataset_summary()
+
+# Classification report
+try:
+    report = classification_report(y_test, brf.predict(X_test), output_dict=True)
+    report_df = pd.DataFrame(report).transpose()
+    report_df.to_csv(os.path.join(output_dir, 'classification_report.csv'))
+
+    model_accuracy = brf.score(X_test, y_test)
+    print(f"Model Test Accuracy: {model_accuracy:.4f}")
+except Exception as e:
+    print(f"Error generating classification report: {e}")
+    model_accuracy = 0.0
+
+# Create analysis summary
+summary_text = f"""
+NYC HOLC Value Analysis Summary
+==============================
+
+Dataset Information:
+- Total samples: {len(data)}
+- Features: {len(feature_columns)}
+- HOLC Value classes: {sorted(data['HOLC Value'].unique())}
+- Class distribution: {dict(data['HOLC Value'].value_counts().sort_index())}
+
+Model Performance:
+- Test accuracy: {model_accuracy:.4f}
+- Algorithm: Balanced Random Forest Classifier
+- Test size: 30% of dataset
+
+Top 6 Most Important Features (as specified):
+{chr(10).join([f"{i + 1}. {feat}: {feature_ranges[feat][0]:.4f} to {feature_ranges[feat][1]:.4f}"
+               for i, feat in enumerate(top_6_features)])}
+
+Color Scheme for HOLC Values (No Green Colors):
+- HOLC Value 0: Dark Purple ({holc_colors[0]})
+- HOLC Value 1: Deep Pink ({holc_colors[1]}) - High Contrast
+- HOLC Value 2: Dodger Blue ({holc_colors[2]})
+- HOLC Value 3: Sky Blue ({holc_colors[3]})
+
+Approved Color Palette: Red, Light Red, Orange, Yellow, Purple, Pink, Blue
+Color Maps Used: Purples, Reds, Blues, Oranges, YlOrRd, RdBu, coolwarm
+
+Generated Visualizations:
+1-6: 3D Scatter plots for feature combinations
+7-12: 3D Surface probability plots  
+13-18: Enhanced 3D Contour probability plots with high contrast colors
+19: 3D Model performance visualization
+
+Key Features of Enhanced 3D Contour Plots:
+- Dark Purple regions indicate areas where HOLC Value 0 is most likely
+- Deep Pink regions indicate areas where HOLC Value 1 is most likely  
+- High color contrast for clear visual distinction
+- Four-panel layout with optimized spacing showing different probability perspectives
+- All colors restricted to: Red, Light Red, Orange, Yellow, Purple, Pink, Blue (NO GREEN)
+- Enhanced spacing and layout to prevent text/label overlap
+- Larger figure sizes and increased margins for better readability
+
+Files Generated:
+- feature_importance.csv: Complete feature importance ranking
+- feature_ranges.csv: Value ranges for top 6 features
+- dataset_summary_statistics.csv: Descriptive statistics
+- feature_correlation_matrix.csv: Feature correlations
+- holc_value_distribution.csv: Target variable distribution
+- test_predictions_with_probabilities.csv: Model predictions with probabilities
+- classification_report.csv: Model performance metrics
+- 19 high-resolution 3D visualization PNG files
+
+Key Insights:
+- The Balanced Random Forest model helps handle class imbalance in HOLC Values
+- Enhanced 3D visualizations show complex relationships between features and HOLC classifications
+- High-contrast probability contours clearly indicate regions where HOLC Values 0 and 1 are most likely to occur
+- Deep Purple and Bright Pink color scheme provides maximum visual distinction for critical HOLC values
+"""
+
+with open(os.path.join(output_dir, 'analysis_summary.txt'), 'w') as f:
+    f.write(summary_text)
+
+print(f"\nAnalysis complete! All results saved to '{output_dir}' folder.")
+print(f"Generated {len([f for f in os.listdir(output_dir) if f.endswith('.png')])} 3D visualization files")
+print(f"Generated {len([f for f in os.listdir(output_dir) if f.endswith('.csv')])} CSV datasets")
+print("Enhanced features:")
+print("- High contrast colors for HOLC Values 0 (Dark Purple) and 1 (Deep Pink)")
+print("- Four-panel 3D contour plots for comprehensive probability visualization")
+print("- Enhanced model performance visualization")
+print("- Color palette restricted to: Red, Light Red, Orange, Yellow, Purple, Pink, Blue")
+print("- NO GREEN colors used in any visualization")
+print("- Optimized spacing and layout to prevent text/image overlap")
+print("- Increased figure sizes and improved margins for better readability")
+print("- Enhanced label padding and title positioning")
+print("\nTop 6 feature value ranges for HOLC Value prediction:")
+for feature in top_6_features:
+    min_val, max_val = feature_ranges[feature]
+    print(f"  {feature}: [{min_val:.4f}, {max_val:.4f}]")
